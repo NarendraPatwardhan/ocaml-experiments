@@ -18,6 +18,11 @@ build:
 		$(PROJECT):builder \
 		ocamlopt -o build/main main.ml
 
+.PHONY: run # Run the compiled binary
+run:
+	@echo "${BOLD}Building the project...${RESET}"
+	@./build/main
+
 .PHONY: help # Display the help message
 help:
 	@echo "${BOLD}Available targets:${RESET}"
