@@ -1,136 +1,197 @@
-(* Define the instruction set *)
-type instruction =
-  | Push of int        (* Push a value onto the stack *)
-  | Pop                (* Pop the top value from the stack *)
-  | Inspect            (* Inspect the top value on the stack *)
-  | Add                (* Add the top two values on the stack *)
-  | Sub                (* Subtract the top two values on the stack *)
-  | Mul                (* Multiply the top two values on the stack *)
-  | Div                (* Divide the top two values on the stack *)
-  | Mod                (* Modulo the top two values on the stack *)
-  | And                (* Bitwise AND the top two values on the stack *)
-  | Or                 (* Bitwise OR the top two values on the stack *)
-  | Xor                (* Bitwise XOR the top two values on the stack *)
-  | Not                (* Bitwise NOT the top value on the stack *)
-  | Load of int        (* Load a value from memory onto the stack *)
-  | Store of int       (* Store the top value from the stack into memory *)
+(* Exceptions for error conditions and control‐flow signals *)
+exception VM_Error of string
+exception Break
 
-(* Define the VM state *)
-type vm = {
-  stack : int list;          (* The stack of integers *)
-  program : instruction list; (* The program to execute *)
-  memory : int array;        (* Linear memory model *)
-  call_stack : int list;     (* Call stack for function calls *)
-  pc : int;                  (* Program counter *)
+(* The instruction set *)
+type instr =
+  (* Stack manipulation *)
+  | Push of int
+  | Drop
+  | Dup
+  | Swap
+  (* Arithmetic *)
+  | Plus | Minus | Mul | Div | Mod
+  (* Logic *)
+  | Eq | Lt | Gt
+  (* Boolean *)
+  | And | Or | Not
+  (* Debug *)
+  | Inspect
+  (* Structured control flow. In our “structured” VM the compound instructions
+     contain lists of instructions. End is implicit (the end of the list). *)
+  | Block of instr list     (* executed once *)
+  | Loop of instr list      (* repeatedly executed until a Break *)
+  | If of instr list * instr list option  (* optional else branch *)
+  | Break                   (* break out one level *)
+  | Jump of int             (* jump n instructions forward in the current block *)
+  (* Memory (we assume a linear memory array) *)
+  | Load of int             (* load from memory address *)
+  | Store of int            (* store into memory address *)
+
+(* The machine state: a stack (of ints) and a fixed-size memory *)
+type state = {
+  stack : int list;
+  memory : int array;
 }
 
-(* Initialize the VM *)
-let init_vm program memory_size = {
-  stack = [];
-  program = program;
-  memory = Array.make memory_size 0;
-  call_stack = [];
-  pc = 0;
-}
+(* Initial state: empty stack and memory of 1024 cells initialized to 0 *)
+let init_state () = { stack = []; memory = Array.make 1024 0 }
 
-(* Push a value onto the stack *)
-let push stack value = value :: stack
+(* Basic stack helpers *)
+let pop st =
+  match st.stack with
+  | [] -> raise (VM_Error "pop on empty stack")
+  | x :: xs -> (x, { st with stack = xs })
 
-(* Pop a value from the stack *)
-let pop stack =
-  match stack with
-  | [] -> failwith "Stack underflow"
-  | x :: xs -> (x, xs)
+let push x st = { st with stack = x :: st.stack }
 
-(* Execute a single instruction *)
-let execute_instruction vm instr =
-  match instr with
-  | Push value -> { vm with stack = push vm.stack value }
-  | Pop ->
-      let (_, stack') = pop vm.stack in
-      { vm with stack = stack' }
-  | Inspect ->
-      let (value, _) = pop vm.stack in
-      Printf.printf "Top of stack: %d\n" value;
-      vm
-  | Add ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (a + b) }
-  | Sub ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (b - a) }
-  | Mul ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (a * b) }
-  | Div ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (b / a) }
-  | Mod ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (b mod a) }
-  | And ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (a land b) }
-  | Or ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (a lor b) }
-  | Xor ->
-      let (a, stack') = pop vm.stack in
-      let (b, stack'') = pop stack' in
-      { vm with stack = push stack'' (a lxor b) }
-  | Not ->
-      let (a, stack') = pop vm.stack in
-      { vm with stack = push stack' (lnot a) }
-  | Load addr ->
-      let value = vm.memory.(addr) in
-      { vm with stack = push vm.stack value }
-  | Store addr ->
-      let (value, stack') = pop vm.stack in
-      vm.memory.(addr) <- value;
-      { vm with stack = stack' }
+(* We use a helper to drop n elements from a list. *)
+module ListExt = struct
+  let rec drop n l =
+    if n <= 0 then l else
+      match l with
+      | [] -> []
+      | _::xs -> drop (n-1) xs
+end
 
-(* Run the VM *)
-let rec run_vm vm =
-  if vm.pc >= List.length vm.program then
-    vm (* No more instructions to execute *)
-  else
-    let instr = List.nth vm.program vm.pc in
-    let vm' = execute_instruction vm instr in
-    run_vm { vm' with pc = vm'.pc + 1 }
+(* The interpreter: it executes a list of instructions sequentially.
+   Note: in a real VM one might compile to an array with explicit program counter,
+   but here we use a recursive function over the list. *)
+let rec exec (prog : instr list) (st : state) : state =
+  let rec run prog st =
+    match prog with
+    | [] -> st
+    | i :: rest ->
+      let st' =
+        match i with
+        (* --- Stack manipulation --- *)
+        | Push n -> push n st
+        | Drop ->
+            let (_, st') = pop st in st'
+        | Dup ->
+            let (x, _) = pop st in push x st
+        | Swap ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            { st2 with stack = x :: y :: st2.stack }
+        (* --- Arithmetic --- *)
+        | Plus ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (y + x) st2
+        | Minus ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (y - x) st2
+        | Mul ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (y * x) st2
+        | Div ->
+            let (x, st1) = pop st in
+            if x = 0 then raise (VM_Error "division by zero")
+            else
+              let (y, st2) = pop st1 in
+              push (y / x) st2
+        | Mod ->
+            let (x, st1) = pop st in
+            if x = 0 then raise (VM_Error "modulo by zero")
+            else
+              let (y, st2) = pop st1 in
+              push (y mod x) st2
+        (* --- Logic --- *)
+        | Eq ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (if x = y then 1 else 0) st2
+        | Lt ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (if y < x then 1 else 0) st2
+        | Gt ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (if y > x then 1 else 0) st2
+        (* --- Boolean --- *)
+        | And ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (if x <> 0 && y <> 0 then 1 else 0) st2
+        | Or ->
+            let (x, st1) = pop st in
+            let (y, st2) = pop st1 in
+            push (if x <> 0 || y <> 0 then 1 else 0) st2
+        | Not ->
+            let (x, st1) = pop st in
+            push (if x = 0 then 1 else 0) st1
+        (* --- Debug --- *)
+        | Inspect ->
+            List.iter (fun n -> Printf.printf "%d " n) st.stack;
+            Printf.printf "\n";
+            st
+        (* --- Control Flow --- *)
+        | Block body ->
+            let st' = run body st in
+            st'
+        | Loop body ->
+            let rec loop st =
+              try
+                let st' = run body st in
+                loop st'
+              with Break -> st
+            in
+            loop st
+        | If (tbranch, fbranch) ->
+            let (cond, st1) = pop st in
+            if cond <> 0 then run tbranch st1
+            else
+              (match fbranch with
+               | None -> st1
+               | Some fb -> run fb st1)
+        | Break ->
+            (* Break is meant to abort the innermost loop/block *)
+            raise Break
+        | Jump n ->
+            (* In this simple interpreter Jump n just drops the next n instructions *)
+            run (ListExt.drop n rest) st
+        (* --- Memory --- *)
+        | Load addr ->
+            if addr < 0 || addr >= Array.length st.memory then
+              raise (VM_Error "invalid memory load")
+            else
+              push st.memory.(addr) st
+        | Store addr ->
+            let (x, st1) = pop st in
+            if addr < 0 || addr >= Array.length st.memory then
+              raise (VM_Error "invalid memory store")
+            else
+              (st.memory.(addr) <- x; st1)
+      in
+      run rest st'
+  in
+  run prog st
 
-(* Helper function to print the stack *)
-let print_stack vm =
-  List.iter (Printf.printf "%d ") vm.stack;
-  print_newline ()
+(* An example program to test the VM *)
+let prog = [
+  (* Push two numbers and add them *)
+  Push 10; Push 20; Plus; Inspect;
+  (* Execute a block once *)
+  Block [Push 1; Inspect];
+  (* Execute a loop that breaks immediately *)
+  Loop [
+    Push 0; Inspect;
+    Break;  (* This break will exit the loop *)
+    Push 999; Inspect  (* This instruction is never reached *)
+  ];
+  (* An if with an else branch *)
+  Push 0;
+  If ([Push 100; Inspect],
+      Some [Push 200; Inspect]);
+  (* A jump that skips one instruction (if any) *)
+  Push 42; Jump 1; Push 999; Inspect;
+]
 
-(* Helper function to print memory *)
-let print_memory vm =
-  Array.iteri (fun i value -> Printf.printf "Memory[%d] = %d\n" i value) vm.memory
-
-(* Example usage *)
 let () =
-  (* Define a simple program: (2 + 3) * 4 *)
-  let program = [
-    Push 2;
-    Push 3;
-    Add;
-    Push 4;
-    Mul;
-    Store 0; (* Store result in memory[0] *)
-    Load 0;  (* Load result from memory[0] *)
-  ] in
+  let _ = exec prog (init_state ()) in
+  ()
 
-  (* Initialize and run the VM *)
-  let vm = init_vm program 10 in
-  let result_vm = run_vm vm in
-
-  (* Print the final stack and memory *)
-  print_stack result_vm;
-  print_memory result_vm
