@@ -23,7 +23,6 @@ type instr =
   | Loop of instr list      (* repeatedly executed until a Break *)
   | If of instr list * instr list option  (* optional else branch *)
   | Break                   (* break out one level *)
-  | Jump of int             (* jump n instructions forward in the current block *)
   (* Memory (we assume a linear memory array) *)
   | Load of int             (* load from memory address *)
   | Store of int            (* store into memory address *)
@@ -151,9 +150,6 @@ let rec exec (prog : instr list) (st : state) : state =
         | Break ->
             (* Break is meant to abort the innermost loop/block *)
             raise Break
-        | Jump n ->
-            (* In this simple interpreter Jump n just drops the next n instructions *)
-            run (ListExt.drop n rest) st
         (* --- Memory --- *)
         | Load addr ->
             if addr < 0 || addr >= Array.length st.memory then
@@ -187,8 +183,7 @@ let prog = [
   Push 0;
   If ([Push 100; Inspect],
       Some [Push 200; Inspect]);
-  (* A jump that skips one instruction (if any) *)
-  Push 42; Jump 1; Push 999; Inspect;
+  Push 42; Inspect;
 ]
 
 let () =
