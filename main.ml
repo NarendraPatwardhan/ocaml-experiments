@@ -44,15 +44,6 @@ let pop st =
 
 let push x st = { st with stack = x :: st.stack }
 
-(* We use a helper to drop n elements from a list. *)
-module ListExt = struct
-  let rec drop n l =
-    if n <= 0 then l else
-      match l with
-      | [] -> []
-      | _::xs -> drop (n-1) xs
-end
-
 (* The interpreter: it executes a list of instructions sequentially.
    Note: in a real VM one might compile to an array with explicit program counter,
    but here we use a recursive function over the list. *)
