@@ -19,7 +19,7 @@ type instr =
   | Inspect
   (* Structured control flow. In our “structured” VM the compound instructions
      contain lists of instructions. End is implicit (the end of the list). *)
-  | Block of instr list     (* executed once *)
+  | Do of instr list     (* executed once *)
   | Loop of instr list      (* repeatedly executed until a Break *)
   | If of instr list * instr list option  (* optional else branch *)
   | Break                   (* break out one level *)
@@ -129,7 +129,7 @@ let rec exec (prog : instr list) (st : state) : state =
             Printf.printf "\n";
             st
         (* --- Control Flow --- *)
-        | Block body ->
+        | Do body ->
             let st' = run body st in
             st'
         | Loop body ->
@@ -148,7 +148,7 @@ let rec exec (prog : instr list) (st : state) : state =
                | None -> st1
                | Some fb -> run fb st1)
         | Break ->
-            (* Break is meant to abort the innermost loop/block *)
+            (* Break is meant to abort the innermost loop/do *)
             raise Break
         (* --- Memory --- *)
         | Load addr ->
@@ -172,7 +172,7 @@ let prog = [
   (* Push two numbers and add them *)
   Push 10; Push 20; Plus; Inspect;
   (* Execute a block once *)
-  Block [Push 1; Inspect];
+  Do [Push 1; Inspect];
   (* Execute a loop that breaks immediately *)
   Loop [
     Push 0; Inspect;
